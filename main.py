@@ -1,5 +1,7 @@
 import os
 from dotenv import load_dotenv
+import gspread
+from google.oauth2.service_account import Credentials
 
 # Load the API key from .env file
 load_dotenv()
@@ -25,3 +27,17 @@ def call_gemini(prompt):
 # Test the function
 result = call_gemini("Say hello and tell me what you can do in 2 sentences.")
 print(result)
+
+# ---- Phase 2: read from Google Sheet ----
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
+
+creds = Credentials.from_service_account_file("service-account.json", scopes = SCOPES)
+client = gspread.authorize(creds)
+sheet = client.open("triage-engine-input").sheet1
+records = sheet.get_all_records()
+
+for row in records:
+    print(row)
