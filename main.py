@@ -46,7 +46,14 @@ sheet = client.open("triage-engine-input").sheet1
 records = sheet.get_all_records()
 
 # ---- Phase 3: process each row through Gemini ----
-for row in records:
+# ---- Phase 4: process each row and write results back ----
+for i, row in enumerate(records, start=2):  # start=2 because row 1 is headers
     raw_text = row["Raw Text"]
     result = call_gemini(raw_text)
+
     print(f"ID {row['ID']}: [{result['category']}] {result['summary']}")
+
+    # Write category, summary, and status back to the sheet
+    sheet.update_cell(i, 4, result["category"])   # column D
+    sheet.update_cell(i, 5, result["summary"])     # column E
+    sheet.update_cell(i, 3, "processed")           # column C (Status)
