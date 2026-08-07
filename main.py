@@ -17,12 +17,18 @@ def call_gemini(prompt):
     # response = client.models.generate_content(model="gemini-2.0-flash-lite", contents=prompt)
     # return response.text
 
-    mock_response = """
-    Hello! I'm Gemini, Google's AI model. 
-    I can help you summarize text, classify data, answer questions, 
-    write code, and much more.
-    """
-    return mock_response
+    text =  prompt.lower()
+    if "crash" in text or "fix" in text:
+        category = "Bug"
+    elif "love" in text or "amazing" in text:
+        category = "praise"
+    elif "waiting" in text or "refund" in text:
+        category = "complaint"
+    else:
+        category = "other"
+
+    mock_summary = "Auto-generated summary placeholder for:" + prompt[:40] + "..."
+    return {"summary": mock_summary, "category": category}
 
 # Test the function
 result = call_gemini("Say hello and tell me what you can do in 2 sentences.")
@@ -39,5 +45,8 @@ client = gspread.authorize(creds)
 sheet = client.open("triage-engine-input").sheet1
 records = sheet.get_all_records()
 
+# ---- Phase 3: process each row through Gemini ----
 for row in records:
-    print(row)
+    raw_text = row["Raw Text"]
+    result = call_gemini(raw_text)
+    print(f"ID {row['ID']}: [{result['category']}] {result['summary']}")
