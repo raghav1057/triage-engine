@@ -2,37 +2,39 @@ import os
 from dotenv import load_dotenv
 import gspread
 from google.oauth2.service_account import Credentials
+from groq import Groq
+import json
 
-# Load the API key from .env file
 load_dotenv()
-
-# Read the API key from environment
-api_key = os.getenv("GEMINI_API_KEY")
+groq_api_key = os.getenv("GROQ_API_KEY")
+groq_client = Groq(api_key=groq_api_key)
 
 def call_gemini(prompt):
-    # MOCK RESPONSE - replace with real API call once quota resets
-    # Real code will be:
-    # from google import genai
-    # client = genai.Client(api_key=api_key)
-    # response = client.models.generate_content(model="gemini-2.0-flash-lite", contents=prompt)
-    # return response.text
+    # Real API call using Groq (function name kept as call_gemini so nothing
+    # else in the file needs to change)
+    system_instructions = (
+        "You are a support ticket triage assistant. "
+        "Given a piece of raw customer text, respond with ONLY a JSON object "
+        "in this exact format: {\"summary\": \"...\", \"category\": \"bug|praise|complaint|other\"}. "
+        "The summary should be one short sentence. Do not include any text outside the JSON."
+    )
 
-    text =  prompt.lower()
-    if "crash" in text or "fix" in text:
-        category = "Bug"
-    elif "love" in text or "amazing" in text:
-        category = "praise"
-    elif "waiting" in text or "refund" in text:
-        category = "complaint"
-    else:
-        category = "other"
+    response = groq_client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[
+            {"role": "system", "content": system_instructions},
+            {"role": "user", "content": prompt}
+        ]
+    )
 
-    mock_summary = "Auto-generated summary placeholder for:" + prompt[:40] + "..."
-    return {"summary": mock_summary, "category": category}
+    raw_output = response.choices[0].message.content
 
-# Test the function
-result = call_gemini("Say hello and tell me what you can do in 2 sentences.")
-print(result)
+    try:
+        result = json.loads(raw_output)
+    except json.JSONDecodeError:
+        result = {"summary": raw_output[:100], "category": "other"}
+
+    return result
 
 # ---- Phase 2: read from Google Sheet ----
 SCOPES = [
@@ -40,20 +42,18 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive"
 ]
 
-creds = Credentials.from_service_account_file("service-account.json", scopes = SCOPES)
+creds = Credentials.from_service_account_file("service-account.json", scopes=SCOPES)
 client = gspread.authorize(creds)
 sheet = client.open("triage-engine-input").sheet1
 records = sheet.get_all_records()
 
-# ---- Phase 3: process each row through Gemini ----
-# ---- Phase 4: process each row and write results back ----
+# ---- Phase 3 & 4: classify each row and write results back ----
 for i, row in enumerate(records, start=2):  # start=2 because row 1 is headers
     raw_text = row["Raw Text"]
     result = call_gemini(raw_text)
 
     print(f"ID {row['ID']}: [{result['category']}] {result['summary']}")
 
-    # Write category, summary, and status back to the sheet
     sheet.update_cell(i, 4, result["category"])   # column D
     sheet.update_cell(i, 5, result["summary"])     # column E
     sheet.update_cell(i, 3, "processed")           # column C (Status)
