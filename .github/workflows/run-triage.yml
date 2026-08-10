@@ -1,28 +1,28 @@
 name: Run Triage Engine
 
-on: 
+on:
   schedule:
-    - cron: "0 * * * *" # Runs every hour
-    workflow_dispatch: # Allows manual triggering of the workflow
+    - cron: '0 * * * *'
+  workflow_dispatch:
 
 jobs:
-  run_pipeline:
+  run-pipeline:
     runs-on: ubuntu-latest
 
     steps:
-      -name:Checkout the repository
-      -uses: actions/checkout@v4
+      - name: Check out the repository
+        uses: actions/checkout@v4
 
-      -name: Set up Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      -name: Install dependencies
-      run: pip install -r requirements.txt
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
-      -name: Run the triage script
-      env:
-        GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        GOOGLE_SERVICE_ACCOUNT: ${{secrets.GOOGLE_SERVICE_ACCOUNT}}
-      run: python main.py
+      - name: Run the triage script
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+        run: python main.py
