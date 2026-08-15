@@ -163,6 +163,25 @@ emails = get_new_emails(gmail_service, last_run)
 
 print(f"Found {len(emails)} new emails since last run.")
 
+# ---- Sender blocklist ----
+BLOCKED_SENDERS = [
+    "no-reply",
+    "noreply",
+    "donotreply",
+    "do-not-reply",
+    "notifications",
+    "newsletter",
+    "mailer-daemon",
+    "automated",
+    "support@",       # remove this if your use case IS support emails
+    "hello@",
+    "info@"
+]
+
+def is_blocked_sender(sender):
+    sender_lower = sender.lower()
+    return any(blocked in sender_lower for blocked in BLOCKED_SENDERS)
+
 for email in emails:
     result = call_gemini(email["body"] or email["subject"])
     print(f"[{result['category']}] {email['subject']} — {result['summary']}")
