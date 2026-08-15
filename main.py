@@ -39,14 +39,28 @@ def call_gemini(prompt):
 
 # ---- Gmail auth ----
 def get_gmail_service():
-    creds = OAuthCredentials.from_authorized_user_file("token.json", [
-        "https://www.googleapis.com/auth/gmail.readonly",
-        "https://www.googleapis.com/auth/gmail.modify"
-    ])
+    gmail_token_env = os.getenv("GMAIL_TOKEN")
+    
+    if gmail_token_env:
+        token_data = json.loads(gmail_token_env)
+        creds = OAuthCredentials.from_authorized_user_info(token_data, [
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.modify"
+        ])
+    else:
+        creds = OAuthCredentials.from_authorized_user_file("token.json", [
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.modify"
+        ])
+    
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        with open("token.json", "w") as f:
-            f.write(creds.to_json())
+        if gmail_token_env:
+            pass  # can't write back to env variable, token will refresh next run
+        else:
+            with open("token.json", "w") as f:
+                f.write(creds.to_json())
+    
     return build("gmail", "v1", credentials=creds)
 
 # ---- Clean email body ----
