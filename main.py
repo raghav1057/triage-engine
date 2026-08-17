@@ -2,7 +2,8 @@ import os
 import json
 import base64
 import re
-from datetime import datetime, timezone
+import email.mime.text as mime_text
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 import gspread
 from google.oauth2.service_account import Credentials
@@ -40,47 +41,36 @@ def call_gemini(prompt):
 # ---- Gmail auth ----
 def get_gmail_service():
     gmail_token_env = os.getenv("GMAIL_TOKEN")
-    
+    GMAIL_SCOPES = [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/gmail.send"
+    ]
     if gmail_token_env:
         token_data = json.loads(gmail_token_env)
-        creds = OAuthCredentials.from_authorized_user_info(token_data, [
-            "https://www.googleapis.com/auth/gmail.readonly",
-            "https://www.googleapis.com/auth/gmail.modify"
-        ])
+        creds = OAuthCredentials.from_authorized_user_info(token_data, GMAIL_SCOPES)
     else:
-        creds = OAuthCredentials.from_authorized_user_file("token.json", [
-            "https://www.googleapis.com/auth/gmail.readonly",
-            "https://www.googleapis.com/auth/gmail.modify"
-        ])
-    
+        creds = OAuthCredentials.from_authorized_user_file("token.json", GMAIL_SCOPES)
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        if gmail_token_env:
-            pass  # can't write back to env variable, token will refresh next run
-        else:
+        if not gmail_token_env:
             with open("token.json", "w") as f:
                 f.write(creds.to_json())
-    
     return build("gmail", "v1", credentials=creds)
 
 # ---- Clean email body ----
 def clean_email_body(text):
-    # Remove reply chains (lines starting with >)
     text = re.sub(r"(?m)^>.*$", "", text)
-    # Remove common signature patterns
     text = re.sub(r"(?mi)^(--|__|\*\*|regards|thanks|sincerely|sent from).*$", "", text)
-    # Collapse multiple blank lines
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = text.strip()
-    # Truncate to 500 words
     words = text.split()
-    if len(words) > 500:
-        text = " ".join(words[:500]) + "..."
+    if len(words) > 300:
+        text = " ".join(words[:300]) + "..."
     return text
 
 # ---- Fetch new emails since last run ----
 def get_new_emails(service, since_timestamp):
-    # Convert timestamp to Gmail query format
     after = int(since_timestamp.timestamp())
     query = f"after:{after} -label:triaged"
     results = service.users().messages().list(userId="me", q=query).execute()
@@ -91,7 +81,6 @@ def get_new_emails(service, since_timestamp):
         headers = {h["name"]: h["value"] for h in full["payload"]["headers"]}
         subject = headers.get("Subject", "(no subject)")
         sender = headers.get("From", "(unknown)")
-        # Extract body
         body = ""
         payload = full["payload"]
         if "parts" in payload:
@@ -125,24 +114,57 @@ def get_or_create_label(service, label_name="triaged"):
     for label in labels:
         if label["name"].lower() == label_name.lower():
             return label["id"]
-    # Create it if it doesn't exist
     new_label = service.users().labels().create(
         userId="me",
         body={"name": label_name, "labelListVisibility": "labelShow", "messageListVisibility": "show"}
     ).execute()
     return new_label["id"]
 
+# ---- Send bug alert email ----
+def send_bug_alert(service, sender_email, subject, summary):
+    alert_to = "projectmailtest01@gmail.com"
+    alert_subject = f"Bug Alert: {subject}"
+    alert_body = f"""A new email has been classified as a bug.
+
+From: {sender_email}
+Subject: {subject}
+Summary: {summary}
+
+Check the triage sheet for full details.
+"""
+    message = mime_text.MIMEText(alert_body)
+    message["to"] = alert_to
+    message["subject"] = alert_subject
+    encoded = base64.urlsafe_b64encode(message.as_bytes()).decode()
+    service.users().messages().send(
+        userId="me",
+        body={"raw": encoded}
+    ).execute()
+    print(f"Bug alert sent to {alert_to}")
+
+# ---- Sender blocklist ----
+BLOCKED_SENDERS = [
+    "no-reply", "noreply", "donotreply", "do-not-reply",
+    "notifications", "newsletter", "mailer-daemon",
+    "automated", "hello@", "info@",
+    "github"  # block GitHub notification emails
+]
+
+def is_blocked_sender(sender):
+    sender_lower = sender.lower()
+    return any(blocked in sender_lower for blocked in BLOCKED_SENDERS)
+
 # ---- Google Sheets auth ----
-SCOPES = [
+SHEETS_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
 service_account_env = os.getenv("GOOGLE_SERVICE_ACCOUNT")
 if service_account_env:
     service_account_info = json.loads(service_account_env)
-    creds = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
+    creds = Credentials.from_service_account_info(service_account_info, scopes=SHEETS_SCOPES)
 else:
-    creds = Credentials.from_service_account_file("service-account.json", scopes=SCOPES)
+    creds = Credentials.from_service_account_file("service-account.json", scopes=SHEETS_SCOPES)
 
 sheets_client = gspread.authorize(creds)
 sheet = sheets_client.open("triage-engine-input").sheet1
@@ -152,8 +174,6 @@ last_run_raw = sheet.acell("H1").value
 if last_run_raw:
     last_run = datetime.fromisoformat(last_run_raw).replace(tzinfo=timezone.utc)
 else:
-    # First run — look back 24 hours
-    from datetime import timedelta
     last_run = datetime.now(timezone.utc) - timedelta(hours=24)
 
 # ---- Run Gmail pipeline ----
@@ -163,30 +183,15 @@ emails = get_new_emails(gmail_service, last_run)
 
 print(f"Found {len(emails)} new emails since last run.")
 
-# ---- Sender blocklist ----
-BLOCKED_SENDERS = [
-    "no-reply",
-    "noreply",
-    "donotreply",
-    "do-not-reply",
-    "notifications",
-    "newsletter",
-    "mailer-daemon",
-    "automated",
-    "support@",       # remove this if your use case IS support emails
-    "hello@",
-    "info@"
-]
-
-def is_blocked_sender(sender):
-    sender_lower = sender.lower()
-    return any(blocked in sender_lower for blocked in BLOCKED_SENDERS)
-
 for email in emails:
+    if is_blocked_sender(email["sender"]):
+        print(f"Skipped (blocked sender): {email['sender']}")
+        apply_triaged_label(gmail_service, email["id"], label_id)
+        continue
+
     result = call_gemini(email["body"] or email["subject"])
     print(f"[{result['category']}] {email['subject']} — {result['summary']}")
 
-    # Append row to sheet
     sheet.append_row([
         email["sender"],
         email["subject"],
@@ -196,7 +201,9 @@ for email in emails:
         "processed"
     ])
 
-    # Label email as triaged in Gmail
+    if result["category"] == "bug":
+        send_bug_alert(gmail_service, email["sender"], email["subject"], result["summary"])
+
     apply_triaged_label(gmail_service, email["id"], label_id)
 
 # ---- Update last run timestamp ----
