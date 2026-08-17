@@ -25,12 +25,12 @@ def call_gemini(prompt):
         "The summary should be one short sentence. Do not include any text outside the JSON."
     )
     response = groq_client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=[
-            {"role": "system", "content": system_instructions},
-            {"role": "user", "content": prompt}
-        ]
-    )
+    model="openai/gpt-oss-20b",
+    messages=[
+        {"role": "system", "content": system_instructions},
+        {"role": "user", "content": prompt}
+    ]
+)
     raw_output = response.choices[0].message.content
     try:
         result = json.loads(raw_output)
@@ -120,11 +120,16 @@ def get_or_create_label(service, label_name="triaged"):
     ).execute()
     return new_label["id"]
 
-# ---- Send bug alert email ----
-def send_bug_alert(service, sender_email, subject, summary):
-    alert_to = "projectmailtest01@gmail.com"
-    alert_subject = f"Bug Alert: {subject}"
-    alert_body = f"""A new email has been classified as a bug.
+# ---- Send category-based alert email ----
+def send_alert(service, sender_email, subject, summary, category):
+    if category == "bug":
+        alert_to = "projectmailtest01@gmail.com"
+        alert_subject = f"Bug Alert: {subject}"
+    else:
+        alert_to = "anonymous981061@gmail.com"
+        alert_subject = f"[{category.capitalize()}] {subject}"
+
+    alert_body = f"""A new email has been classified as: {category}
 
 From: {sender_email}
 Subject: {subject}
@@ -140,7 +145,7 @@ Check the triage sheet for full details.
         userId="me",
         body={"raw": encoded}
     ).execute()
-    print(f"Bug alert sent to {alert_to}")
+    print(f"Alert sent to {alert_to} for category: {category}")
 
 # ---- Sender blocklist ----
 BLOCKED_SENDERS = [
@@ -201,8 +206,7 @@ for email in emails:
         "processed"
     ])
 
-    if result["category"] == "bug":
-        send_bug_alert(gmail_service, email["sender"], email["subject"], result["summary"])
+    send_alert(gmail_service, email["sender"], email["subject"], result["summary"], result["category"])
 
     apply_triaged_label(gmail_service, email["id"], label_id)
 
