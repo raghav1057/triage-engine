@@ -21,21 +21,27 @@ def call_gemini(prompt):
     system_instructions = (
         "You are a support ticket triage assistant. "
         "Given a piece of raw customer text, respond with ONLY a JSON object "
-        "in this exact format: {\"summary\": \"...\", \"category\": \"bug|praise|complaint|other\"}. "
-        "The summary should be one short sentence. Do not include any text outside the JSON."
+        "in this exact format: {\"summary\": \"...\", \"category\": \"bug|praise|complaint|other\", "
+        "\"sentiment\": \"angry|frustrated|worried|neutral|happy\"}. "
+        "The summary should be one short sentence. "
+        "Sentiment reflects the customer's actual emotional tone: "
+        "angry for hostile or demanding language, frustrated for annoyed or impatient tone, "
+        "worried for anxious or concerned tone, neutral for calm or factual tone, "
+        "happy for pleased or appreciative tone. "
+        "Do not include any text outside the JSON."
     )
     response = groq_client.chat.completions.create(
-    model="openai/gpt-oss-20b",
-    messages=[
-        {"role": "system", "content": system_instructions},
-        {"role": "user", "content": prompt}
-    ]
-)
+        model="openai/gpt-oss-20b",
+        messages=[
+            {"role": "system", "content": system_instructions},
+            {"role": "user", "content": prompt}
+        ]
+    )
     raw_output = response.choices[0].message.content
     try:
         result = json.loads(raw_output)
     except json.JSONDecodeError:
-        result = {"summary": raw_output[:100], "category": "other"}
+        result = {"summary": raw_output[:100], "category": "other", "sentiment": "neutral"}
     return result
 
 # ---- Gmail auth ----
@@ -100,6 +106,27 @@ def get_new_emails(service, since_timestamp):
         })
     return emails
 
+# ---- Compute priority score (lower number = higher priority) ----
+PRIORITY_MAP = {
+    ("bug", "angry"): 1,
+    ("bug", "frustrated"): 2,
+    ("bug", "worried"): 3,
+    ("complaint", "angry"): 4,
+    ("bug", "neutral"): 5,
+    ("complaint", "frustrated"): 6,
+    ("complaint", "worried"): 7,
+    ("complaint", "neutral"): 8,
+    ("other", "angry"): 9,
+    ("other", "frustrated"): 9,
+    ("other", "worried"): 9,
+    ("other", "neutral"): 9,
+    ("praise", "happy"): 10,
+    ("praise", "neutral"): 10,
+}
+
+def get_priority(category, sentiment):
+    return PRIORITY_MAP.get((category, sentiment), 9)
+
 # ---- Add Gmail label ----
 def apply_triaged_label(service, message_id, label_id):
     service.users().messages().modify(
@@ -158,6 +185,8 @@ BLOCKED_SENDERS = [
 def is_blocked_sender(sender):
     sender_lower = sender.lower()
     return any(blocked in sender_lower for blocked in BLOCKED_SENDERS)
+def is_self_generated_alert(subject):
+    return subject.startswith("Bug Alert:") or (subject.startswith("[") and "]" in subject)
 
 # ---- Google Sheets auth ----
 SHEETS_SCOPES = [
@@ -174,8 +203,8 @@ else:
 sheets_client = gspread.authorize(creds)
 sheet = sheets_client.open("triage-engine-input").sheet1
 
-# ---- Read last run timestamp from sheet (cell H1) ----
-last_run_raw = sheet.acell("H1").value
+# ---- Read last run timestamp from sheet (cell J1) ----
+last_run_raw = sheet.acell("J1").value
 if last_run_raw:
     last_run = datetime.fromisoformat(last_run_raw).replace(tzinfo=timezone.utc)
 else:
@@ -189,27 +218,29 @@ emails = get_new_emails(gmail_service, last_run)
 print(f"Found {len(emails)} new emails since last run.")
 
 for email in emails:
-    if is_blocked_sender(email["sender"]):
-        print(f"Skipped (blocked sender): {email['sender']}")
+    if is_blocked_sender(email["sender"]) or is_self_generated_alert(email["subject"]):
+        print(f"Skipped (blocked or self-generated): {email['subject']}")
         apply_triaged_label(gmail_service, email["id"], label_id)
         continue
 
     result = call_gemini(email["body"] or email["subject"])
-    print(f"[{result['category']}] {email['subject']} — {result['summary']}")
+    priority = get_priority(result["category"], result["sentiment"])
+    print(f"[{result['category']}/{result['sentiment']}] priority={priority} {email['subject']} — {result['summary']}")
 
     sheet.append_row([
         email["sender"],
         email["subject"],
         email["body"][:200],
         result["category"],
+        result["sentiment"],
         result["summary"],
+        priority,
         "processed"
     ])
 
     send_alert(gmail_service, email["sender"], email["subject"], result["summary"], result["category"])
-
     apply_triaged_label(gmail_service, email["id"], label_id)
 
 # ---- Update last run timestamp ----
-sheet.update_acell("H1", datetime.now(timezone.utc).isoformat())
+sheet.update_acell("J1", datetime.now(timezone.utc).isoformat())
 print("Done. Timestamp updated.")
