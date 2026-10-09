@@ -78,7 +78,7 @@ def clean_email_body(text):
 # ---- Fetch new emails since last run ----
 def get_new_emails(service, since_timestamp):
     after = int(since_timestamp.timestamp())
-    query = f"after:{after} -label:triaged"
+    query = f"after:{after} -label:triaged -from:me"  # Add "-from:me" to exclude emails we sent
     results = service.users().messages().list(userId="me", q=query).execute()
     messages = results.get("messages", [])
     emails = []
